@@ -21,7 +21,7 @@
 
 #define LORAWAN_IFACE       3
 #define LORAWAN_DST_PORT    42
-#define LORAWAN_MAX_SIZE     64
+#define LORAWAN_MAX_SIZE    64
 
 #define UART_PORT           UART_DEV(1)
 #define UART_SPEED          115200UL
@@ -66,7 +66,7 @@ int lorawan_send(netif_t *iface, char *buffer, size_t n)
     gnrc_pktsnip_t *pkt, *hdr;
     gnrc_netif_hdr_t *nethdr;
 
-    puts("### Sending packet: ###");
+    printf("### Sending packet (%d bytes): ###\n", n);
     od_hex_dump(buffer, n, 0);
 
     pkt = gnrc_pktbuf_add(NULL, buffer, n, GNRC_NETTYPE_UNDEF);
@@ -130,12 +130,12 @@ void update_sensor_state(void)
         case 'T':
             // temperature
             sensor_state.temperature = strtof(ptr, NULL);
-            sensor_state.temperature_tstamp = ztimer_now(ZTIMER_MSEC);
+            sensor_state.temperature_tstamp = ztimer_now(ZTIMER_SEC);
             break;
         case 'F':
             // failure
             sensor_state.failure_count = strtoul(ptr, NULL, 10);
-            sensor_state.failure_count_tstamp = ztimer_now(ZTIMER_MSEC);
+            sensor_state.failure_count_tstamp = ztimer_now(ZTIMER_SEC);
             break;
         default:
             // ignore
@@ -148,12 +148,12 @@ void send_sensor_state(void)
     char buffer[LORAWAN_MAX_SIZE];
 
     snprintf(
-         buffer, LORAWAN_MAX_SIZE,
-        "{\"temp\":%.2f,\"temp_age\":%lu,\"fail\":%lu,\"fail_age\":%lu}",
-         sensor_state.temperature,
-         ztimer_now(ZTIMER_MSEC) - sensor_state.temperature_tstamp,
-         sensor_state.failure_count,
-         ztimer_now(ZTIMER_MSEC) - sensor_state.failure_count_tstamp
+        buffer, LORAWAN_MAX_SIZE,
+        "%.1f,%lu,%lu,%lu",
+        sensor_state.temperature,
+        ztimer_now(ZTIMER_SEC) - sensor_state.temperature_tstamp,
+        sensor_state.failure_count,
+        ztimer_now(ZTIMER_SEC) - sensor_state.failure_count_tstamp
     );
 
     lorawan_send(lorawan, buffer, strlen(buffer));
