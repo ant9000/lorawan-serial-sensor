@@ -11,6 +11,8 @@ PORT ?= /dev/ttyUSB0
 
 USEMODULE += od
 USEMODULE += od_string
+USEMODULE += printf_float
+USEMODULE += ztimer_sec
 
 FEATURES_REQUIRED += periph_uart
 CFLAGS += -DENABLE_ACME1=MODE_USART

@@ -17,23 +17,34 @@
 #include "net/gnrc/netreg.h"
 #include "net/gnrc/pktdump.h"
 
+#define UPDATER_PRIO        (THREAD_PRIORITY_MAIN - 1)
+
 #define LORAWAN_IFACE       3
 #define LORAWAN_DST_PORT    42
+#define LORAWAN_MAX_SIZE     64
 
 #define UART_PORT           UART_DEV(1)
 #define UART_SPEED          115200UL
-#define UART_BUFSIZE        (128U)
-
-#define MSG_CMD_COMPLETED   1
-#define MSG_TIMEOUT         2
+#define UART_BUF_SIZE       (128U)
 
 typedef struct {
-    char rx_mem[UART_BUFSIZE];
+    float temperature;
+    ztimer_now_t temperature_tstamp;
+    uint32_t failure_count;
+    ztimer_now_t failure_count_tstamp;
+} sensor_state_t;
+
+typedef struct {
+    char rx_mem[UART_BUF_SIZE];
     ringbuffer_t rx_buf;
 } uart_ctx_t;
 
+static sensor_state_t sensor_state;
 static uart_ctx_t ctx;
-static kernel_pid_t main_thread;
+static kernel_pid_t updater_pid;
+static char updater_stack[THREAD_STACKSIZE_MAIN];
+static netif_t *lorawan;
+
 
 static void rx_cb(void *arg, uint8_t data)
 {
@@ -43,27 +54,19 @@ static void rx_cb(void *arg, uint8_t data)
 
     if (data == '\n') {
         msg_t msg;
-        msg.content.value = MSG_CMD_COMPLETED;
-        msg_send(&msg, main_thread);
+        msg.content.value = 1; // ignored
+        msg_send(&msg, updater_pid);
     }
 }
 
-int lorawan_send(netif_t *iface)
+int lorawan_send(netif_t *iface, char *buffer, size_t n)
 {
     uint8_t addr[] = {LORAWAN_DST_PORT};
     size_t addr_len = 1;
     gnrc_pktsnip_t *pkt, *hdr;
     gnrc_netif_hdr_t *nethdr;
-    char buffer[UART_BUFSIZE];
-    size_t n = 0;
-    int c;
 
-    do {
-        c = ringbuffer_get_one(&ctx.rx_buf);
-        if ((c == '\n') || (c == -1)) break;
-        buffer[n++] = c;
-    } while (n < UART_BUFSIZE);
-
+    puts("### Sending packet: ###");
     od_hex_dump(buffer, n, 0);
 
     pkt = gnrc_pktbuf_add(NULL, buffer, n, GNRC_NETTYPE_UNDEF);
@@ -86,19 +89,88 @@ int lorawan_send(netif_t *iface)
         gnrc_pktbuf_release(pkt);
         return 1;
     }
+    puts("### Sent. ###");
 
     return 0;
 }
 
-int main(void)
+void update_sensor_state(void);
+
+static void *updater(void *arg)
 {
+    (void)arg;
     msg_t msg;
     msg_t msg_queue[8];
     msg_init_queue(msg_queue, 8);
-    main_thread = thread_getpid();
-    netif_t *lorawan;
+    while (1) {
+        msg_receive(&msg);
+        update_sensor_state();
+    }
+    // never reached
+    return NULL;
+}
+
+void update_sensor_state(void)
+{
+    char buffer[UART_BUF_SIZE+1], *ptr;
+    size_t n = 0;
+    int c;
+    do {
+        c = ringbuffer_get_one(&ctx.rx_buf);
+        if ((c == '\n') || (c == -1)) break;
+        buffer[n++] = c;
+    } while (n < UART_BUF_SIZE);
+    buffer[n] = 0;
+
+    puts("### Received line: ###");
+    od_hex_dump(buffer, n, 0);
+
+    ptr = buffer+1;
+    switch(buffer[0]) {
+        case 'T':
+            // temperature
+            sensor_state.temperature = strtof(ptr, NULL);
+            sensor_state.temperature_tstamp = ztimer_now(ZTIMER_MSEC);
+            break;
+        case 'F':
+            // failure
+            sensor_state.failure_count = strtoul(ptr, NULL, 10);
+            sensor_state.failure_count_tstamp = ztimer_now(ZTIMER_MSEC);
+            break;
+        default:
+            // ignore
+            break;
+    }
+}
+
+void send_sensor_state(void)
+{
+    char buffer[LORAWAN_MAX_SIZE];
+
+    snprintf(
+         buffer, LORAWAN_MAX_SIZE,
+        "{\"temp\":%.2f,\"temp_age\":%lu,\"fail\":%lu,\"fail_age\":%lu}",
+         sensor_state.temperature,
+         ztimer_now(ZTIMER_MSEC) - sensor_state.temperature_tstamp,
+         sensor_state.failure_count,
+         ztimer_now(ZTIMER_MSEC) - sensor_state.failure_count_tstamp
+    );
+
+    lorawan_send(lorawan, buffer, strlen(buffer));
+}
+
+int main(void)
+{
+    sensor_state.temperature = -999;
+    sensor_state.temperature_tstamp = 0;
+    sensor_state.failure_count = 0;
+    sensor_state.failure_count_tstamp = 0;
 
     puts("LoRaWAN serial sensor");
+
+    /* start the sensor updater thread */
+    updater_pid = thread_create(updater_stack, sizeof(updater_stack),
+                                UPDATER_PRIO, 0, updater, NULL, "updater");
 
     /* Initalize LoRaWAN interface */
     gpio_set(TCXO_PWR_PIN);
@@ -113,7 +185,7 @@ int main(void)
     printf("Success: Initialized LoRaWAN interface\n");
 
     /* initialize UART */
-    ringbuffer_init(&ctx.rx_buf, ctx.rx_mem, UART_BUFSIZE);
+    ringbuffer_init(&ctx.rx_buf, ctx.rx_mem, UART_BUF_SIZE);
     int res = uart_init(UART_PORT, UART_SPEED, rx_cb, NULL);
     if (res == UART_NOBAUD) {
         printf("Error: Given baudrate (%lu) not possible\n", UART_SPEED);
@@ -126,14 +198,13 @@ int main(void)
     printf("Success: Initialized UART at BAUD %lu\n", UART_SPEED);
 
     while (1) {
-        msg_receive(&msg);
-        switch(msg.content.value) {
-            case MSG_CMD_COMPLETED:
-                lorawan_send(lorawan);
-                break;
-            default:
-                break;
+        if (sensor_state.temperature != -999 || sensor_state.failure_count != 0) {
+            puts("Sensor data available, sending");
+            send_sensor_state();
+        } else {
+            puts("Nothing to send");
         }
+        ztimer_sleep(ZTIMER_SEC, 30);
     }
 
     /* this should never be reached */
