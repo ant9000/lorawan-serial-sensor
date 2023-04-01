@@ -52,7 +52,7 @@ static void rx_cb(void *arg, uint8_t data)
 
     ringbuffer_add_one(&ctx.rx_buf, data);
 
-    if (data == '\n') {
+    if (data == '\r') {
         msg_t msg;
         msg.content.value = 1; // ignored
         msg_send(&msg, updater_pid);
@@ -117,7 +117,7 @@ void update_sensor_state(void)
     int c;
     do {
         c = ringbuffer_get_one(&ctx.rx_buf);
-        if ((c == '\n') || (c == -1)) break;
+        if ((c == '\n') || (c == -1) || (c == '\r')) break;
         buffer[n++] = c;
     } while (n < UART_BUF_SIZE);
     buffer[n] = 0;
@@ -129,7 +129,7 @@ void update_sensor_state(void)
     switch(buffer[0]) {
         case 'T':
             // temperature
-            sensor_state.temperature = strtof(ptr, NULL);
+            sensor_state.temperature = strtof(ptr+2, NULL);
             sensor_state.temperature_tstamp = ztimer_now(ZTIMER_SEC);
             break;
         case 'F':
@@ -154,6 +154,18 @@ void send_sensor_state(void)
         ztimer_now(ZTIMER_SEC) - sensor_state.temperature_tstamp,
         sensor_state.failure_count,
         ztimer_now(ZTIMER_SEC) - sensor_state.failure_count_tstamp
+    );
+
+    lorawan_send(lorawan, buffer, strlen(buffer));
+}
+
+void send_message(char *data)
+{
+    char buffer[LORAWAN_MAX_SIZE];
+
+    snprintf(
+        buffer, LORAWAN_MAX_SIZE,
+        "%s",data
     );
 
     lorawan_send(lorawan, buffer, strlen(buffer));
@@ -196,13 +208,18 @@ int main(void)
         return 1;
     }
     printf("Success: Initialized UART at BAUD %lu\n", UART_SPEED);
+	ztimer_sleep(ZTIMER_SEC, 10);
+    send_message("Start Node");
+	ztimer_sleep(ZTIMER_SEC, 30);
 
     while (1) {
         if (sensor_state.temperature != -999 || sensor_state.failure_count != 0) {
             puts("Sensor data available, sending");
             send_sensor_state();
         } else {
-            puts("Nothing to send");
+            puts("Nothing to send: send No Data");
+			send_message("No Data");
+            
         }
         ztimer_sleep(ZTIMER_SEC, 30);
     }
