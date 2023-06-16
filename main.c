@@ -23,7 +23,7 @@
 #define LORAWAN_DST_PORT    42
 #define LORAWAN_MAX_SIZE    64
 
-#define UART_PORT           UART_DEV(1)
+#define UART_PORT           ACME1_UART_DEV
 #define UART_SPEED          115200UL
 #define UART_BUF_SIZE       (128U)
 

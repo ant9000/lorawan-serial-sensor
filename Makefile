@@ -15,7 +15,7 @@ USEMODULE += printf_float
 USEMODULE += ztimer_sec
 
 FEATURES_REQUIRED += periph_uart
-CFLAGS += -DENABLE_ACME1=MODE_USART
+CFLAGS += -DENABLE_ACME1=MODE_UART
 
 USEMODULE += netdev_default
 USEMODULE += auto_init_gnrc_netif
